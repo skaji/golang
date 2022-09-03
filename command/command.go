@@ -7,36 +7,41 @@ import (
 	"time"
 )
 
-func Run(ctx context.Context, cmd *exec.Cmd) (<-chan struct{}, error) {
+func Run(ctx context.Context, cmd *exec.Cmd) (<-chan error, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 
-	wait := make(chan struct{})
+	wait1 := make(chan error)
 	go func() {
-		defer close(wait)
-		cmd.Wait()
+		err := cmd.Wait()
+		wait1 <- err
+		close(wait1)
 	}()
 
-	done := make(chan struct{})
+	wait2 := make(chan error)
 	go func() {
-		defer close(done)
+		var wait1Err error
+		defer func() {
+			wait2 <- wait1Err
+			close(wait2)
+		}()
 		select {
-		case <-wait:
+		case wait1Err = <-wait1:
 			return
 		case <-ctx.Done():
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 			timer := time.NewTimer(2 * time.Second)
 			defer timer.Stop()
 			select {
-			case <-wait:
+			case wait1Err = <-wait1:
 				return
 			case <-timer.C:
 				_ = cmd.Process.Kill()
-				<-wait
+				wait1Err = <-wait1
 				return
 			}
 		}
 	}()
-	return done, nil
+	return wait2, nil
 }
